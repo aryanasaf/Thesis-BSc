@@ -1,0 +1,379 @@
+library(fpp3)
+library(dplyr)
+library(tidyr)
+library(TSA) 
+library(sarima)
+library(purrr)
+library(tseries)
+library(forecast)
+library(astsa)
+
+# library(AICcmodavg)
+# install.packages('AICcmodavg')
+########################################################################################################################################
+# Data voorbereiden
+# Data inladen 
+# newPatientTimeSeriesInput2 <- read.csv2(file = '~/Desktop/newPatientTimeSeriesInput2', sep=",")
+# Dataset via import dataset -> newPatientTimeSeriesInput2 (naam veranderen overal bij nieuwe dataset elk kwartaal)
+str(newPatientTimeSeriesInput2)
+
+# Data kleiner maken met filter -tijdelijk-
+# newPatientTimeSeriesInput2 <- filter(newPatientTimeSeriesInput2, X < 50000)
+
+
+# Combineren week en jaar zodat je 1 tijdseenheid hebt
+# Om week en jaartal samen als date object te doen, moet er een dag bij: hiervoor %Y%W%u met maandag als 1e dag van die week van dat jaar
+# newPatientTimeSeriesInput2$Year_Week <- paste(newPatientTimeSeriesInput2$IsoYear, newPatientTimeSeriesInput2$IsoWeek, sep="_")
+# AANPASSEN NOG DATUM
+newPatientTimeSeriesInput2$Date <- paste(newPatientTimeSeriesInput2$IsoYear, newPatientTimeSeriesInput2$IsoWeek, "4", sep="-")
+newPatientTimeSeriesInput2$Date <- as.Date(newPatientTimeSeriesInput2$Date, "%Y-%W-%u")
+
+
+#Check NAN values + verwijderen rijen 
+colSums(is.na(newPatientTimeSeriesInput2))
+newPatientTimeSeriesInput2 <- na.omit(newPatientTimeSeriesInput2)  
+str(newPatientTimeSeriesInput2)
+
+# Aangeven dat het om wekelijks gaat, uitkomst = 'jaartal weeknummer' + Tsibble maken (type dataframe tijdreeks)
+# newPatientTimeSeriesInput2 %>% mutate(index = yearweek(newPatientTimeSeriesInput2$Date)) %>% as_tsibble(key = c(SourceId), index = index) -> newPatientTimeSeriesInput2
+newPatientTimeSeriesInput2 %>% mutate(yw = yearweek(Date)) %>% as_tsibble(key = c(SourceId), index = yw) -> newPatientTimeSeriesInput2
+str(newPatientTimeSeriesInput2)
+
+# Verander kolom naam te gebruiken jaarweek kolom
+# colnames(newPatientTimeSeriesInput2) 
+# colnames(newPatientTimeSeriesInput2)[colnames(newPatientTimeSeriesInput2) == "yearweek(newPatientTimeSeriesInput2$Date)"] <- "YW_Date"
+
+# Sorteren data oud-nieuw datum
+newPatientTimeSeriesInput2 %>% arrange(ymd(newPatientTimeSeriesInput2$Date))
+
+#Dataset counts per week 
+newPatientTimeSeriesInput2 %>% count(yw, wt=Count) -> CountTable
+DateCount <- as.data.frame(CountTable) 
+str(DateCount)
+CountTable 
+
+# Tijdreeksobject maken 
+# Splitten Var1 (jaartal weeknummer wordt nu weer gezien als factor, dit omzetten naar date)
+DateCount <- DateCount %>% rename(Freq = n)
+DateCount<- separate(DateCount, col=yw, into=c('Year', 'Week'), sep=' W')
+DateCount$Date <- paste(DateCount$Year, DateCount$Week, "1", sep="-")
+DateCount$Date <- as.Date(DateCount$Date, "%Y-%W-%u")
+#if (newPatientTimeSeriesInput2$IsoYear = 2019){newPatientTimeSeriesInput2$Date <- newPatientTimeSeriesInput2$Date -6}
+
+#verwijderen NA
+colSums(is.na(DateCount))
+DateCount <- na.omit(DateCount)  
+DateCount %>% mutate(yw = yearweek(Date)) %>% as_tsibble(index = yw) -> DateCount
+str(DateCount)
+
+# Time gaps 
+data_gaps <- DateCount %>% 
+  count_gaps(.full = TRUE)
+data_gaps
+#Invullen time gaps
+data_count <- DateCount %>% 
+  fill_gaps(.full = TRUE)
+data_count
+#Replace NA met 0 voor freq
+data_count[["Freq"]][is.na(data_count[["Freq"]])] <- 0
+head(data_count)
+
+# t/m week 3 2016 weggooien (geen bruikbare data)
+data_count <- data_count[-c(1:48), ]
+data_count <- data_count[-c(155:161), ]
+#data_count <- data_count[-c(174:209), ]
+########################################################################################################################################
+#write.csv(data_count,'data_count.csv')
+#Plots    
+windowsFonts(A = windowsFont("Garamond")) 
+
+#autoplot
+data_count %>% autoplot(Freq) + labs(title = "Frequentie nieuwe patiëntaankomsten", x = "Tijd", y = "Patiëntaankomsten") + 
+  theme(text = element_text(family = "A")) +
+  theme(text=element_text(size=30), 
+        axis.text=element_text(size=30), 
+        axis.title=element_text(size=30),
+        plot.title=element_text(size=40), 
+        legend.text=element_text(size=25), 
+        legend.title=element_text(size=25)) +
+  theme(axis.text.x = element_text(angle=90, vjust=0.5) )
+
+
+
+#seizoensplot 
+data_count %>% gg_season(y = Freq) + labs(title ="Seizoenspatroon nieuwe patiëntaankomsten", x = "Tijd", y = "Patiëntaankomsten")+ 
+  theme(text = element_text(family = "A")) +
+  theme(text=element_text(size=30), 
+        axis.text=element_text(size=30), 
+        axis.title=element_text(size=30),
+        plot.title=element_text(size=40), 
+        legend.text=element_text(size=25), 
+        legend.title=element_text(size=25)) +
+  theme(axis.text.x = element_text(angle=90, vjust=0.5) )
+
+# p <- your plot code
+# p + theme(axis.title.y=element_text(angle=0, vjust=0.5))
+
+
+str(data_count)
+#ACF plot (maat lineaire samenhang)
+#lag_max = max lag at which to calculate acf = 10log10(N/m) with N = # observations, m = # series 
+#10log10(209/1)=23
+#nieuwe data = 10log10(63/1)=17,9
+#data_count %>% ACF(Freq, lag_max = 17) + labs(title ="ACF", x = "Tijd", y = "ACF") %>% autoplot()
+data_count %>% ACF(Freq, lag_max = 22) %>% autoplot() + labs(title ="ACF plot", x = "Tijd", y = "ACF")+ 
+  theme(text = element_text(family = "A")) +
+  theme(text=element_text(size=30), 
+        axis.text=element_text(size=30), 
+        axis.title=element_text(size=30),
+        plot.title=element_text(size=40), 
+        legend.text=element_text(size=25), 
+        legend.title=element_text(size=25)) +
+  theme(axis.text.x = element_text(angle=90, vjust=0.5) )
+#Plot niet in blauwe stippellijn (acceptatiegebied) = Autocorrelatie is statistisch significant verschillend van 0
+
+#STL model (= Seasonal decomposition of Time Series by Loess, multiple time series with columns seasonal, trend, remainder)
+# data_count %>% filter_index(~ "2019 W36") %>% model(STL(Freq ~ trend(window = 52) +season(window = "periodic"), robust = TRUE) %>% components() -> decomp1
+# autoplot(decomp1)
+#t.window = trend-cycle window, number of consecutive observations to be used when estimating the trend-cycle
+#s.window = seasonal window, 
+# data_count %>%
+#   stl(t.window=52, s.window="periodic", robust=TRUE) %>%
+#   autoplot()
+#decomp %>% as_tsibble() %>% autoplot(Freq) + geom_line(aes(y=trend))    
+#str(data_count)
+#decomp -> modell(STL(Freq ~ trend(window = 52) +season(window = "periodic")), robust = TRUE) 
+
+#Toe te voegen: STL, Decomp met geom_line 
+
+# Kwantitatieve beschrijving tijdreeks 
+data_count %>% features(Freq, feat_acf)
+data_count %>% features(Freq, feat_stl)
+data_count %>% features(Freq, feat_stl)
+
+# Train-Test split (80-20, geen crossvalidation, want alleen om baseline modellen te testen op eenmalige voorspelling)
+
+data_count %>% filter_index(.~"2018 W21")-> data_train
+data_count %>% filter_index("2018 w22"~"2018 W36")-> data_val
+data_count %>% filter_index("2018 w37"~.)-> data_test
+
+
+head(data_test)
+# Seasonal naive trainingset (herhalen meest recente seizoenscyclus op training)
+data_train %>% model(seasonal = SNAIVE(Freq ~ lag(52))) -> data_fit
+# Seasonal naive forecast 
+data_fit %>% forecast(h=52) -> data_fc
+accuracy(data_fc, data_val)
+
+#Mean baselinemodel
+data_train %>% model(mean = MEAN(Freq)) -> data_fit2
+data_fit2 %>% forecast(h=52) -> data_fc2
+accuracy(data_fc2, data_val)
+data_fc2 %>% autoplot(data_test, level=NULL)  + labs(title ="Baseline model Mean Forecast", x = "Tijd", y = "Aantal patiëntaankomsten")+ 
+  theme(text = element_text(family = "A")) +
+  theme(text=element_text(size=30), 
+        axis.text=element_text(size=30), 
+        axis.title=element_text(size=30),
+        plot.title=element_text(size=40), 
+        legend.text=element_text(size=25), 
+        legend.title=element_text(size=25)) +
+  theme(axis.text.x = element_text(angle=90, vjust=0.5) )
+
+#plot forecast
+data_fc %>% autoplot(data_count, level=NULL)  + labs(title ="Baseline model Seasonal Naive Forecast", x = "Tijd", y = "Aantal patiëntaankomsten")+ 
+  theme(text = element_text(family = "A")) +
+  theme(text=element_text(size=30), 
+        axis.text=element_text(size=20), 
+        axis.title=element_text(size=30),
+        plot.title=element_text(size=40), 
+        legend.text=element_text(size=25), 
+        legend.title=element_text(size=25)) +
+  theme(axis.text.x = element_text(angle=90, vjust=0.5) )#Op hele set
+data_fc %>% autoplot(data_test, level=NULL)  + labs(title ="Baseline model Seasonal Naive Forecast", x = "Tijd", y = "Aantal patiëntaankomsten")+ 
+  theme(text = element_text(family = "A")) +
+  theme(text=element_text(size=30), 
+        axis.text=element_text(size=30), 
+        axis.title=element_text(size=30),
+        plot.title=element_text(size=40), 
+        legend.text=element_text(size=25), 
+        legend.title=element_text(size=25)) +
+  theme(axis.text.x = element_text(angle=90, vjust=0.5) ) #Op test set (zoom stukje met forecast)
+
+#Baseline forecast modellen 
+#STL decompositie
+#     data_count %>% as_tsibble(key = c(Freq), index = yw)
+#     model(STL(Freq ~ trend(window = 52) +season(window = "periodic"))) %>% components() -> data_decomp
+# 
+# str(data_count)
+
+#Voorstappen theorie -> opzoeken!
+
+########################################################################################################################################
+#ARIMA + SARIMA (zelf opstellen ipv standaard package)
+#visualiseren reeks 
+#lag_max = max lag at which to calculate acf = 10log10(N/m) with N = # observations, m = # series 
+#10log10(209/1)=23
+data_train %>% gg_tsdisplay(Freq, plot_type = "partial", lag_max = 22) + labs(title ="Freq + ACF + PACF")
+#Uit ACF en PACF de cycluslengte bepalen -> nog doen
+
+periodogram(data_train$Freq)
+
+###################################################################
+# STAP 1 SARIMA: Stationair maken tijdreeks
+# Omdat ARIMA een lineair regressiemodel is die zijn eigen lags gebruikt om voorspellingen te maken, moet de tijdreeks stationair zijn
+str(data_train)
+#ADF toets 
+adf.test(data_train$Freq)
+#p-value = 0.028; p<significance level (0,05), dus null hypothese verwerpen -> series has no unit root -> stationair
+#KPSS toets
+data_train %>%features(Freq, unitroot_kpss)
+#p-value = 0,01; p<significance level (0,05) dus null hypothese verwerpen -> series has unit root -> niet stationair
+#Als ADF zegt stationair en KPSS zegt niet stationair -> The series is difference stationary -> differentieren en weer toetsen
+data_train %>% mutate (diff1 = difference(Freq, lag = 1)) -> data_train 
+data_train <- na.omit(data_train)
+adf.test(data_train$diff1)
+#p-value = 0.01; p<significance level (0,05), dus null hypothese verwerpen -> series has no unit root -> stationair
+data_train %>%features(diff1, unitroot_kpss)
+#p-value = 0.1; p>significance level (0,05), dus null hypothese accepteren -> stationair
+#beide toetsen geven aan dat de reeks nu stationair is na 1x differentieren
+
+# dus d = 1 en D = 1
+
+###################################################################
+#STAP 2: ACF en PACF voor p en q
+data_train %>% gg_tsdisplay(diff1, plot_type = "partial", lag_max = 22) + labs(title ="Freq + ACF + PACF na diff1")
+
+  
+# p = # autoregressive terms (lags stationarized series)= lag 13 en 16 -> 0
+# seasonal P = lag 15 en 18 -> 0
+# q = # moving average terms F = lag 0 2 en 4 -> 2
+# seasonal Q = significant negative spikes PACF (lags forecast errors)= lag 20 -> 2
+# s = weekly seasonal component = 7 (of 12?)
+
+#zelf gemaakte SARIMA is dan:
+#SARIMA(p, d, q)(P, D, Q, s) = SARIMA(0, 1, 2)(0, 1, 2, 7)
+###################################################################
+
+#GRID SEARCH voor generiek maken andere datasets
+#p,q,P,Q van 0 t/m 2
+#d,D van 0 t/m 1
+
+#list voor alle combinaties 
+list(p=seq(0,2), d=seq(0,1), q=seq(0,2), P=seq(0,2), D=seq(0,1), Q=seq(0,2)) %>% cross_df() -> param_sarima
+#324 combinaties
+
+
+#om model sneller te maken = niet voor elke rij AICc berekenen maar alleen de beste 10 bijv
+
+# AICc om beste combinatie model te vergelijken
+# param_sarima %>% mutate(MAE = NA) -> param_sarima
+# 
+# #loop om alle combinaties in model te plotten en testen met AICc
+# for (i in 1:nrow(param_sarima)){
+#   data_train %>% model(ARIMA(Freq ~ 
+#                                pdq(as.numeric(param_sarima[i,"p"]), 
+#                                    as.numeric(param_sarima[i,"d"]), 
+#                                    as.numeric(param_sarima[i,"q"])) + 
+#                                PDQ(as.numeric(param_sarima[i,"P"]), 
+#                                    as.numeric(param_sarima[i,"D"]), 
+#                                    as.numeric(param_sarima[i,"Q"]),
+#                                    period = 52)) 
+#                        #) %>% AICc(param_sarima, return.K = FALSE)() -> SARIMA_grid
+#   ) %>% accuracy() %>% select(MAE) -> SARIMA_grid  
+#   param_sarima[i, "Score"] <- SARIMA_grid
+#   
+# }
+# 
+# #Laagste MAE 
+# param_sarima %>% arrange(MAE) %>% head()
+#twee met de laagste:
+#SARIMA(p, d, q)(P, D, Q, s) = SARIMA(2, 1, 2)(1, 1, 1, 7)
+#SARIMA(p, d, q)(P, D, Q, s) = SARIMA(2, 1, 2)(0, 1, 2, 7)
+
+###################################################################
+# FORECAST 
+
+# detach("package:TSA", unload=TRUE)
+
+str(data_train)
+#Fitten modellen
+fit <- data_train %>%
+  model(
+    SARIMA_handmatig = ARIMA(Freq ~ pdq(0,1,0) + PDQ(0,1,0, period = 52)),
+    SARIMA_grid = ARIMA(Freq ~ pdq(1,1,2) + PDQ(0,1,0, period = 52))
+    #ARIMA_auto = ARIMA(Freq)
+  )
+fit %>% pivot_longer(everything(), names_to = "Model name",
+                     values_to = "Orders")
+
+#Maken Forecast
+fit %>% forecast(h=52) -> sarima_fc
+
+#Plotten Forecast
+sarima_fc %>% autoplot(data_test, level = NULL) + labs(x= "Tijd in weken", y="", title = "Forecast met SARIMA") + 
+  guides(colour = guide_legend(title = "Forecast model"))+
+  theme(text = element_text(family = "A")) +
+  theme(text=element_text(size=30), 
+        axis.text=element_text(size=20), 
+        axis.title=element_text(size=30),
+        plot.title=element_text(size=40), 
+        legend.text=element_text(size=30), 
+        legend.title=element_text(size=25)) +
+  theme(axis.text.x = element_text(angle=90, vjust=0.5) )
+
+accuracy(sarima_fc, data_val)
+##################
+
+#residu analyse
+
+
+
+# we passen een STL decompositie toe op de tijdreeks
+data_train %>%
+  model(STL(Freq ~ trend(window = 52) + season(window = "periodic"), robust = TRUE)) %>%
+  components() -> decomp_components
+# we halen de trend en de seizoenscomponent op
+decomp_components %>% select(trend) -> decomp_trend
+decomp_components %>% select(season_year) -> decomp_season
+# de trend lijkt op een rechte lijn en gaan we dus voortzetten met drift
+# de seizoenscomponent lijkt periodiek met cycluslengte 12, dus passen we daar seasonal naive op toe
+decomp_trend %>% model(ARIMA(trend ~ pdq(1,1,2) + PDQ(0,1,0, period = 52))) -> trend_decomp_fit
+decomp_season %>% model(ARIMA(season_year ~ pdq(0,1,0) + PDQ(0,1,0, period = 52))) -> season_decomp_fit
+
+# we bepalen zelf de residuen
+decomp_fitted <- augment(trend_decomp_fit)$`.fitted` + augment(season_decomp_fit)$`.fitted`
+decomp_residuals <- data_train$Freq - decomp_fitted
+# de forecasts in een tsibble zetten
+cbind.data.frame(data_train$yw, decomp_residuals) -> decomp_residuals
+colnames(decomp_residuals) <- c("yw", "residuals")
+decomp_residuals <- as_tsibble(decomp_residuals, index=yw)
+# de autocorrelaties bekijken
+decomp_residuals %>% ACF(residuals) %>% autoplot()+ labs(title = "ACF residuen") + 
+  theme(text = element_text(family = "A")) +
+  theme(text=element_text(size=30), 
+        axis.text=element_text(size=30), 
+        axis.title=element_text(size=30),
+        plot.title=element_text(size=40), 
+        legend.text=element_text(size=25), 
+        legend.title=element_text(size=25)) +
+  theme(axis.text.x = element_text(angle=90, vjust=0.5) )
+
+install.packages('qqplotr')
+library(qqplotr)
+qqnorm(decomp_residuals$residuals)
+qqline(decomp_residuals$residuals)
+
+gg <- ggplot(data = decomp_season, mapping = aes(sample = norm)) +
+  stat_qq_band() +
+  stat_qq_line() +
+  stat_qq_point() +
+  labs(x = "Theoretical Quantiles", y = "Sample Quantiles")
+
+
+Box.test(decomp_residuals$residuals, lag = 9, type = "Ljung")
+
+
+t.test(decomp_residuals$residuals)
+
+#write.csv(decomp_residuals, "decomp_residuals.csv")
+
