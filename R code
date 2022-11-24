@@ -1,0 +1,56 @@
+library(fpp3)
+library(dplyr)
+
+## Data voorbereiden
+# Data inladen 
+# NewtrajectoryInputData <- read.csv2(file = '~/Desktop/NewTrajectoryInputData', sep=",")
+# Dataset via import dataset -> NewTrajectoryInputData
+str(NewTrajectoryInputData)
+
+# Data kleiner maken met filter -tijdelijk-
+NewTrajectoryInputData <- filter(NewTrajectoryInputData, X < 1000)
+
+
+# Combineren week en jaar zodat je 1 tijdseenheid hebt
+# Om week en jaartal samen als date object te doen, moet er een dag bij: hiervoor %Y%W%u met maandag als 1e dag van de week van het jaar
+# NewTrajectoryInputData$Year_Week <- paste(NewTrajectoryInputData$IsoYear, NewTrajectoryInputData$IsoWeek, sep="_")
+NewTrajectoryInputData$Date <- paste(NewTrajectoryInputData$IsoYear, NewTrajectoryInputData$IsoWeek, "1", sep="-")
+NewTrajectoryInputData$Date <- as.Date(NewTrajectoryInputData$Date, "%Y-%W-%u")
+
+#Check NAN values + verwijderen rijen 
+colSums(is.na(NewTrajectoryInputData))
+NewTrajectoryInputData <- na.omit(NewTrajectoryInputData)  
+str(NewTrajectoryInputData)
+
+# Aangeven dat het om wekelijks gaat, uitkomst = 'jaartal weeknummer' + Tsibble maken (type dataframe tijdreeks)
+# NewTrajectoryInputData %>% mutate(index = yearweek(NewTrajectoryInputData$Date)) %>% as_tsibble(key = c(SourceId), index = index) -> NewTrajectoryInputData
+NewTrajectoryInputData %>% mutate(yw = yearweek(Date)) %>% as_tsibble(key = c(SourceId), index = yw) -> NewTrajectoryInputData
+str(NewTrajectoryInputData)
+
+# Verander kolom naam te gebruiken jaarweek kolom
+# colnames(NewTrajectoryInputData) 
+# colnames(NewTrajectoryInputData)[colnames(NewTrajectoryInputData) == "yearweek(NewTrajectoryInputData$Date)"] <- "YW_Date"
+
+# Tijdreeksobject maken 
+NewTrajectoryInputData %/% as_tsibble(index = index) -> NewTrajectoryInputData
+
+# Sorteren data oud-nieuw datum
+NewTrajectoryInputData %>% arrange(ymd(NewTrajectoryInputData$Date))
+
+## Train-Test split maken 
+#Handmatig 80-20 split -> later aanpassen hele dataset 
+#Train tijdelijk = 80% van 165 weken = 132 weken : w45 2015 - w21 2018
+#Test tijdelijk = 20%, rest : w22 2018 - w2 2019
+# NewTrajectoryInputData %>% filter_index(.~"2018 W21")-> NewTraject_train
+# NewTrajectoryInputData %>% filter_index("2019 W2"~.)-> NewTraject_test
+# datasplit = sort(sample(nrow(NewTrajectoryInputData), nrow(NewTrajectoryInputData)*.8))
+# NewTraject_train<-data[datasplit]
+# NewTraject_test<-data[-datasplit]
+
+# NewTraject_train<-Parking[1:6552,] # From 01 Sep 2017 to 31 May 2018
+# NewTraject_test<-Parking[6553:7272,] # From 01 Jun 2018 to 30 Jun 2018
+
+# NewTrajectoryInputData %>% select(Date) %>% filter_index(.~"2018 W21")-> NewTraject_train
+# NewTrajectoryInputData %>% select(Date) %>% filter_index("2019 W2"~.)-> NewTraject_test
+
+str(NewTrajectoryInputData)
