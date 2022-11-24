@@ -1,0 +1,174 @@
+library(prophet)
+library(dplyr)
+library(fpp3)
+library(Metrics)
+str(newPatientTimeSeriesInput2)
+
+newPatientTimeSeriesInput2$Date <- paste(newPatientTimeSeriesInput2$IsoYear, newPatientTimeSeriesInput2$IsoWeek, "4", sep="-")
+newPatientTimeSeriesInput2$Date <- as.Date(newPatientTimeSeriesInput2$Date, "%Y-%W-%u")
+
+#Check NAN values + verwijderen rijen 
+colSums(is.na(newPatientTimeSeriesInput2))
+newPatientTimeSeriesInput2 <- na.omit(newPatientTimeSeriesInput2)  
+str(newPatientTimeSeriesInput2)
+
+# Aangeven dat het om wekelijks gaat, uitkomst = 'jaartal weeknummer' + Tsibble maken (type dataframe tijdreeks)
+# newPatientTimeSeriesInput2 %>% mutate(index = yearweek(newPatientTimeSeriesInput2$Date)) %>% as_tsibble(key = c(SourceId), index = index) -> newPatientTimeSeriesInput2
+newPatientTimeSeriesInput2 %>% mutate(yw = yearweek(Date)) %>% as_tsibble(key = c(SourceId), index = yw) -> newPatientTimeSeriesInput2
+str(newPatientTimeSeriesInput2)
+
+
+# Sorteren data oud-nieuw datum
+newPatientTimeSeriesInput2 %>% arrange(ymd(newPatientTimeSeriesInput2$Date))
+
+#Dataset counts per week 
+newPatientTimeSeriesInput2 %>% count(yw, wt=Count) -> CountTable
+DateCount <- as.data.frame(CountTable) 
+str(DateCount)
+CountTable 
+
+# Tijdreeksobject maken 
+# Splitten Var1 (jaartal weeknummer wordt nu weer gezien als factor, dit omzetten naar date)
+DateCount <- DateCount %>% rename(Freq = n)
+DateCount<- separate(DateCount, col=yw, into=c('Year', 'Week'), sep=' W')
+DateCount$Date <- paste(DateCount$Year, DateCount$Week, "1", sep="-")
+DateCount$Date <- as.Date(DateCount$Date, "%Y-%W-%u")
+#if (newPatientTimeSeriesInput2$IsoYear = 2019){newPatientTimeSeriesInput2$Date <- newPatientTimeSeriesInput2$Date -6}
+
+#verwijderen NA
+colSums(is.na(DateCount))
+DateCount <- na.omit(DateCount)  
+DateCount %>% mutate(yw = yearweek(Date)) %>% as_tsibble(index = yw) -> DateCount
+str(DateCount)
+
+# Time gaps 
+data_gaps <- DateCount %>% 
+  count_gaps(.full = TRUE)
+data_gaps
+#Invullen time gaps
+data_count <- DateCount %>% 
+  fill_gaps(.full = TRUE)
+data_count
+#Replace NA met 0 voor freq
+data_count[["Freq"]][is.na(data_count[["Freq"]])] <- 0
+head(data_count)
+
+data_count <- data_count[-c(1:48), ]
+data_count <- data_count[-c(155:161), ]
+
+###################
+
+#dataframe maken voor prophet model
+prophetdata <- data_count[, c("Date", "Freq")]
+colnames(prophetdata) <- c('ds','y')
+
+#write.csv(prophetdata, "prophetdata.csv")
+prophetdatatrain <- prophetdata[1:123,]
+prophetdatatest <- prophetdata[124:154,]
+
+m <- prophet(prophetdatatrain)
+future <- make_future_dataframe(m, periods = 365)
+forecast <- predict(m, future)
+windowsFonts(A = windowsFont("Garamond")) 
+plot(m, forecast) + labs(title = "Prophet eerste model", x = "Tijd (in jaren)", y = "Patiëntaankomsten") + 
+  theme(text = element_text(family = "A")) +
+  theme(text=element_text(size=30), 
+        axis.text=element_text(size=20), 
+        axis.title=element_text(size=30),
+        plot.title=element_text(size=40), 
+        legend.text=element_text(size=25), 
+        legend.title=element_text(size=25))
+
+prophetforecast <- forecast[, c("ds", "yhat")]
+
+print(prophetforecast$ds)
+print(prophetdatatest$ds)
+prophetforecast$ds<-gsub(" GMT","",as.character(prophetforecast$ds))
+prophetforecast$ds<-gsub("-","",as.character(prophetforecast$ds))
+prophetdatatest$ds<-gsub("-","",as.character(prophetdatatest$ds))
+print(prophetdatatest$ds)
+print(prophetforecast$ds)
+
+predact <- merge(prophetforecast, prophetdatatest, by = 'ds')
+
+
+# prediction  = yhat 
+# actual = y
+#RMSE
+rmse(predact$y, predact$yhat)
+
+#MAE
+mae(predact$y, predact$yhat)
+
+#ME
+mse(predact$y, predact$yhat)
+
+#MAPE
+mean(abs((predact$y-predact$yhat)/predact$y)) * 100
+
+#componenten basis model 
+prophet_plot_components(m, forecast)
+
+#Feestdagen toevoegen
+
+kerst <- data_frame(
+  holiday = 'kerst',
+  ds = (c('2016-12-25', '2016-12-26', '2017-12-25', '2017-12-26', '2018-12-25', '2018-12-26')))
+
+
+kerst <- mutate(kerst, ds= as.Date(ds, format= "%Y-%m-%d"))
+
+
+oudennieuw <- data_frame(
+  holiday = 'oudennieuw',
+  ds = (c('2016-12-31', '2016-01-01','2017-12-31', '2017-01-01','2018-12-31', '2018-01-01')))
+
+oudennieuw <- mutate(oudennieuw, ds= as.Date(ds, format= "%Y-%m-%d"))
+
+feestdagen <- bind_rows(kerst, oudennieuw)
+
+feestdagen <- na.omit(feestdagen)  
+
+m1 <- prophet(prophetdatatrain, holidays = feestdagen)
+forecast1 <- predict(m1, future)
+plot(m1, forecast1)+ labs(title = "Prophet feestdagen handmatig", x = "Tijd (in jaren)", y = "Patiëntaankomsten") + 
+  theme(text = element_text(family = "A")) +
+  theme(text=element_text(size=30), 
+        axis.text=element_text(size=20), 
+        axis.title=element_text(size=30),
+        plot.title=element_text(size=40), 
+        legend.text=element_text(size=25), 
+        legend.title=element_text(size=25))
+
+prophetforecast1 <- forecast1[, c("ds", "yhat")]
+
+print(prophetforecast1$ds)
+prophetforecast1$ds<-gsub(" GMT","",as.character(prophetforecast$ds))
+prophetforecast1$ds<-gsub("-","",as.character(prophetforecast$ds))
+
+predact1 <- merge(prophetforecast1, prophetdatatest, by = 'ds')
+
+
+# prediction  = yhat 
+# actual = y
+#RMSE
+rmse(predact1$y, predact1$yhat)
+
+#MAE
+mae(predact1$y, predact1$yhat)
+
+#ME
+mse(predact1$y, predact1$yhat)
+
+#MAPE
+mean(abs((predact1$y-predact1$yhat)/predact$y)) * 100
+
+#componenten basis model 
+prophet_plot_components(m1, forecast1)
+
+ 
+ 
+ 
+ 
+ 
+ 
